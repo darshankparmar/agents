@@ -55,6 +55,8 @@ from .audio_recognition import (
 )
 from .events import (
     AgentFalseInterruptionEvent,
+    BackoffEndedEvent,
+    BackoffStartedEvent,
     ErrorEvent,
     FunctionToolsExecutedEvent,
     MetricsCollectedEvent,
@@ -125,6 +127,11 @@ class AgentActivity(RecognitionHooks):
         self._paused_speech: SpeechHandle | None = None
         self._false_interruption_timer: asyncio.TimerHandle | None = None
         self._interrupt_paused_speech_task: asyncio.Task[None] | None = None
+
+        # for backoff handling
+        self._backoff_timer: asyncio.TimerHandle | None = None
+        self._backoff_active: bool = False
+        self._backoff_start_time: float | None = None
 
         # fired when a speech_task finishes or when a new speech_handle is scheduled
         # this is used to wake up the main task when the scheduling state changes
@@ -718,6 +725,12 @@ class AgentActivity(RecognitionHooks):
         await self._interrupt_paused_speech(old_task=self._interrupt_paused_speech_task)
         self._interrupt_paused_speech_task = None
 
+        # Clean up backoff timer
+        if self._backoff_timer is not None:
+            self._backoff_timer.cancel()
+            self._backoff_timer = None
+            self._backoff_active = False
+
     async def aclose(self) -> None:
         # `aclose` must only be called by AgentSession
 
@@ -1020,6 +1033,11 @@ class AgentActivity(RecognitionHooks):
             self._q_updated.clear()
 
             while self._speech_q:
+                # Check if we're in backoff period before processing speech
+                if self._backoff_active:
+                    logger.debug("speech scheduling blocked by backoff period")
+                    break
+
                 _, _, speech = heapq.heappop(self._speech_q)
                 if speech.done():
                     # skip done speech (interrupted when it's in the queue)
@@ -1199,6 +1217,10 @@ class AgentActivity(RecognitionHooks):
             if self._false_interruption_timer:
                 self._false_interruption_timer.cancel()
                 self._false_interruption_timer = None
+
+            # Start backoff timer when interruption occurs
+            if opt.backoff_seconds > 0:
+                self._start_backoff_timer(opt.backoff_seconds)
 
             if use_pause and self._session.output.audio and self._session.output.audio.can_pause:
                 self._session.output.audio.pause()
@@ -2633,6 +2655,42 @@ class AgentActivity(RecognitionHooks):
                 logger.warning(
                     f"Tool reply cannot be prevented when using {self.llm._label}, it generates reply automatically."
                 )
+
+    def _start_backoff_timer(self, backoff_seconds: float) -> None:
+        """Start the backoff timer to enforce silence after interruption."""
+        # Don't start backoff if duration is zero or negative
+        if backoff_seconds <= 0:
+            return
+
+        # Handle existing backoff based on restart policy
+        if self._backoff_active:
+            if self._session.options.backoff_restart_policy == "restart":
+                # Cancel existing timer and restart
+                if self._backoff_timer is not None:
+                    self._backoff_timer.cancel()
+                    self._backoff_timer = None
+                self._backoff_active = False
+            elif self._session.options.backoff_restart_policy == "ignore":
+                # Ignore new backoff if one is already active
+                return
+
+        self._backoff_active = True
+        self._backoff_start_time = time.time()
+
+        def _on_backoff_ended() -> None:
+            self._backoff_active = False
+            self._backoff_timer = None
+
+            self._session.emit("backoff_ended", BackoffEndedEvent(backoff_seconds=backoff_seconds))
+
+            # Wake up scheduling task in case there are queued speeches
+            self._wake_up_scheduling_task()
+
+        self._backoff_timer = self._session._loop.call_later(backoff_seconds, _on_backoff_ended)
+
+        self._session.emit("backoff_started", BackoffStartedEvent(backoff_seconds=backoff_seconds))
+
+        logger.debug("started backoff timer", extra={"backoff_seconds": backoff_seconds})
 
     def _start_false_interruption_timer(self, timeout: float) -> None:
         if self._false_interruption_timer is not None:

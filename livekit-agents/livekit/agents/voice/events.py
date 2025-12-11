@@ -87,6 +87,8 @@ EventTypes = Literal[
     "user_input_transcribed",
     "conversation_item_added",
     "agent_false_interruption",
+    "backoff_started",
+    "backoff_ended",
     "function_tools_executed",
     "metrics_collected",
     "speech_created",
@@ -137,6 +139,20 @@ class AgentFalseInterruptionEvent(BaseModel):
                 f"AgentFalseInterruptionEvent.{name} is deprecated, automatic resume is now supported"
             )
         return super().__getattribute__(name)
+
+
+class BackoffStartedEvent(BaseModel):
+    type: Literal["backoff_started"] = "backoff_started"
+    backoff_seconds: float
+    """Duration of the backoff window in seconds."""
+    created_at: float = Field(default_factory=time.time)
+
+
+class BackoffEndedEvent(BaseModel):
+    type: Literal["backoff_ended"] = "backoff_ended"
+    backoff_seconds: float
+    """Duration of the backoff window that just ended."""
+    created_at: float = Field(default_factory=time.time)
 
 
 class MetricsCollectedEvent(BaseModel):
@@ -231,6 +247,8 @@ AgentEvent = Annotated[
         UserStateChangedEvent,
         AgentStateChangedEvent,
         AgentFalseInterruptionEvent,
+        BackoffStartedEvent,
+        BackoffEndedEvent,
         MetricsCollectedEvent,
         ConversationItemAddedEvent,
         FunctionToolsExecutedEvent,
