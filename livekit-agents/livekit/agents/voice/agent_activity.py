@@ -968,6 +968,9 @@ class AgentActivity(RecognitionHooks):
         if self._rt_session is not None:
             self._rt_session.interrupt()
 
+        if interrupted_speeches and self._session.options.backoff_seconds > 0:
+            self._start_backoff_timer(self._session.options.backoff_seconds)
+
         if not interrupted_speeches:
             future.set_result(None)
         else:
@@ -1217,10 +1220,6 @@ class AgentActivity(RecognitionHooks):
             if self._false_interruption_timer:
                 self._false_interruption_timer.cancel()
                 self._false_interruption_timer = None
-
-            # Start backoff timer when interruption occurs
-            if opt.backoff_seconds > 0:
-                self._start_backoff_timer(opt.backoff_seconds)
 
             if use_pause and self._session.output.audio and self._session.output.audio.can_pause:
                 self._session.output.audio.pause()
@@ -2662,17 +2661,10 @@ class AgentActivity(RecognitionHooks):
         if backoff_seconds <= 0:
             return
 
-        # Handle existing backoff based on restart policy
-        if self._backoff_active:
-            if self._session.options.backoff_restart_policy == "restart":
-                # Cancel existing timer and restart
-                if self._backoff_timer is not None:
-                    self._backoff_timer.cancel()
-                    self._backoff_timer = None
-                self._backoff_active = False
-            elif self._session.options.backoff_restart_policy == "ignore":
-                # Ignore new backoff if one is already active
-                return
+        # cancel existing timer and restart
+        if self._backoff_timer is not None:
+            self._backoff_timer.cancel()
+            self._backoff_timer = None
 
         self._backoff_active = True
         self._backoff_start_time = time.time()
