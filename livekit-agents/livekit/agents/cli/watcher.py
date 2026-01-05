@@ -70,7 +70,19 @@ class WatchServer:
         cli_args: proto.CliArgs,
         loop: asyncio.AbstractEventLoop,
     ) -> None:
-        self._mp_pch, cli_args.mp_cch = socket.socketpair()
+        mp_pch = None
+        mp_cch = None
+        try:
+            mp_pch, mp_cch = socket.socketpair()
+            self._mp_pch = mp_pch
+            cli_args.mp_cch = mp_cch
+        except Exception:
+            if mp_pch is not None:
+                mp_pch.close()
+            if mp_cch is not None:
+                mp_cch.close()
+            raise
+
         self._cli_args = cli_args
         self._worker_runner = worker_runner
         self._main_file = main_file
